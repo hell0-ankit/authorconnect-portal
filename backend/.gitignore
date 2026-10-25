@@ -1,0 +1,73 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual Environments
+env/
+venv/
+.venv/
+
+# ======================
+# Django
+# ======================
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/
+
+# ======================
+# Environment
+# ======================
+.env
+
+# ======================
+# Logs
+# ======================
+*.log
+
+# ======================
+# Python Cache
+# ======================
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ======================
+# IDE
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# OS Files
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# Node / Tailwind
+# ======================
+tailwind/node_modules/
+tailwind/.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Uncomment if you DON'T want to commit compiled CSS
+# static/css/output.css
+
+# ======================
+# Docker
+# ======================
+docker-compose.override.yml
+
+# ======================
+# Git
+# ======================
+*.orig
