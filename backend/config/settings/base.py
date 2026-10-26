@@ -182,10 +182,15 @@ LOGGING = {
 }
 
 # Metadata shown in the generated OpenAPI schema and Swagger UI.
+
 SPECTACULAR_SETTINGS = {
-    "TITLE": "AuthorConnect API",
-    "DESCRIPTION": "AuthorConnect API documentation",
-    "VERSION": "1.0.0",
+    'TITLE': 'AuthorConnect API',
+    'DESCRIPTION': 'Author Support & Communication Portal API Documentation',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    #  /api/v1 prefix is used for all API endpoints, so we can use a regex to match it in the schema. 
+    'SCHEMA_PATH_PREFIX': r'/api/v[0-9]+',
 }
 
 # Use the custom user model defined in the accounts application.
