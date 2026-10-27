@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { 
@@ -10,8 +10,33 @@ import {
   Sparkles, 
   Bot, 
   Send,
-  MessageSquare
+  Paperclip,
+  X,
+  AlertCircle,
+  MessageCircle
 } from 'lucide-react';
+import useTicketWebSocket from '../hooks/useTicketWebSocket';
+
+const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'text/plain',
+]);
+const ALLOWED_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'txt']);
+
+function mergeTicketMessage(ticket, message) {
+  if (!ticket || ticket.id !== message.ticket_id) return ticket;
+  const messages = ticket.messages || [];
+  if (messages.some((current) => current.id === message.id)) return ticket;
+  return {
+    ...ticket,
+    messages: [...messages, message].sort(
+      (left, right) => new Date(left.created_at) - new Date(right.created_at)
+    ),
+  };
+}
 
 export default function Dashboard() {
   const { user, logout, isAdmin } = useAuth();
@@ -20,13 +45,79 @@ export default function Dashboard() {
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [ticketDetails, setTicketDetails] = useState(null);
   const [replyMessage, setReplyMessage] = useState('');
+  const [replyError, setReplyError] = useState('');
   const [sendingReply, setSendingReply] = useState(false);
+  const [draftingReply, setDraftingReply] = useState(false);
 
   // New ticket modal state
   const [showModal, setShowModal] = useState(false);
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
+  const [bookId, setBookId] = useState('');
+  const [attachment, setAttachment] = useState(null);
+  const [formErrors, setFormErrors] = useState({});
+  const [formError, setFormError] = useState('');
+  const [attachmentError, setAttachmentError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const handleTicketEvent = useCallback((event) => {
+    if (event.type === 'error') {
+      setReplyError(event.message);
+      return;
+    }
+
+    if (event.type === 'ticket_message') {
+      setTicketDetails((current) => mergeTicketMessage(current, event));
+      return;
+    }
+
+    if (event.type === 'ticket_update') {
+      setTickets((current) => current.map((ticket) => (
+        ticket.id === event.id
+          ? {
+            ...ticket,
+            category: event.category,
+            category_display: event.category_display,
+            priority: event.priority,
+            status: event.status,
+            updated_at: event.updated_at,
+          }
+          : ticket
+      )));
+      setTicketDetails((current) => (
+        current?.id === event.id
+          ? {
+            ...current,
+            category: event.category,
+            category_display: event.category_display,
+            priority: event.priority,
+            status: event.status,
+            updated_at: event.updated_at,
+          }
+          : current
+      ));
+      return;
+    }
+
+    if (event.type === 'new_ticket' && isAdmin) {
+      setTickets((current) => [
+        event,
+        ...current.filter((ticket) => ticket.id !== event.id),
+      ]);
+    }
+  }, [isAdmin]);
+
+  const ticketSocket = useTicketWebSocket(
+    selectedTicket ? `/ws/tickets/${selectedTicket}/` : null,
+    handleTicketEvent,
+    Boolean(selectedTicket),
+  );
+  const queueSocket = useTicketWebSocket(
+    '/ws/tickets/queue/',
+    handleTicketEvent,
+    isAdmin,
+  );
 
   const fetchData = async () => {
     try {
@@ -60,20 +151,115 @@ export default function Dashboard() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (!selectedTicket || ticketSocket.status !== 'connected') return undefined;
+    let active = true;
+    api.get(`/support/${selectedTicket}/`).then(({ data }) => {
+      if (!active) return;
+      setTicketDetails((current) => {
+        if (current?.id !== data.id) return data;
+        const messages = new Map(
+          [...(data.messages || []), ...(current.messages || [])]
+            .map((message) => [message.id, message])
+        );
+        return {
+          ...data,
+          messages: [...messages.values()].sort(
+            (left, right) => new Date(left.created_at) - new Date(right.created_at)
+          ),
+        };
+      });
+    }).catch(() => {
+      if (active) setReplyError('Unable to sync ticket messages. Please retry the connection.');
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedTicket, ticketSocket.status]);
+
+  useEffect(() => {
+    if (!isAdmin || queueSocket.status !== 'connected') return undefined;
+    let active = true;
+    api.get('/support/').then(({ data }) => {
+      if (!active) return;
+      const fetchedTickets = data.results || data || [];
+      setTickets((current) => {
+        const latest = new Map(fetchedTickets.map((ticket) => [ticket.id, ticket]));
+        current.forEach((ticket) => {
+          const fetched = latest.get(ticket.id);
+          if (!fetched || new Date(ticket.updated_at) > new Date(fetched.updated_at)) {
+            latest.set(ticket.id, ticket);
+          }
+        });
+        return [...latest.values()].sort(
+          (left, right) => new Date(right.created_at) - new Date(left.created_at)
+        );
+      });
+    }).catch(() => {
+      if (active) console.error('Unable to sync the support queue.');
+    });
+    return () => {
+      active = false;
+    };
+  }, [isAdmin, queueSocket.status]);
+
   const handleCreateTicket = async (e) => {
     e.preventDefault();
+    const errors = {};
+    if (!subject.trim()) errors.subject = 'Enter a subject.';
+    else if (subject.trim().length > 255) errors.subject = 'Subject must be 255 characters or fewer.';
+    if (!description.trim()) errors.description = 'Enter a description.';
+    else if (description.trim().length > 10000) errors.description = 'Description must be 10,000 characters or fewer.';
+    if (attachment) {
+      const extension = attachment.name.split('.').pop()?.toLowerCase();
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.has(extension)) {
+        errors.attachment = 'Upload a PDF, PNG, JPEG, or plain-text file.';
+      } else if (attachment.size > MAX_ATTACHMENT_SIZE) {
+        errors.attachment = 'Attachment must be 5 MB or smaller.';
+      } else if (attachment.type && !ALLOWED_ATTACHMENT_TYPES.has(attachment.type)) {
+        errors.attachment = 'The selected file type is not supported.';
+      }
+    }
+    setFormErrors(errors);
+    setFormError('');
+    if (Object.keys(errors).length > 0) return;
+
     setSubmitting(true);
     try {
-      const res = await api.post('/support/', { subject, description });
+      const payload = new FormData();
+      if (bookId) payload.append('book', bookId);
+      payload.append('subject', subject.trim());
+      payload.append('description', description.trim());
+      if (attachment) payload.append('attachment', attachment);
+
+      const res = await api.post('/support/', payload);
       setSubject('');
       setDescription('');
+      setBookId('');
+      setAttachment(null);
+      setFormErrors({});
+      setFormError('');
       setShowModal(false);
+      setSuccessMessage('Your support ticket was created successfully.');
       await fetchData();
       if (res.data?.id) {
-        loadTicketDetails(res.data.id);
+        await loadTicketDetails(res.data.id);
       }
     } catch (err) {
-      alert('Error creating ticket: ' + (err.response?.data?.detail || err.message));
+      const responseData = err.response?.data;
+      const fieldErrors = {};
+      if (responseData && typeof responseData === 'object') {
+        Object.entries(responseData).forEach(([field, messages]) => {
+          if (['subject', 'description', 'book', 'attachment'].includes(field)) {
+            fieldErrors[field] = Array.isArray(messages) ? messages.join(' ') : String(messages);
+          }
+        });
+      }
+      setFormErrors(fieldErrors);
+      const detail = responseData?.detail || responseData?.non_field_errors?.join?.(' ');
+      setFormError(
+        detail || (Object.keys(fieldErrors).length ? '' : 'Unable to create the ticket. Please try again.')
+      );
     } finally {
       setSubmitting(false);
     }
@@ -83,23 +269,67 @@ export default function Dashboard() {
     e.preventDefault();
     if (!replyMessage.trim() || !selectedTicket) return;
     setSendingReply(true);
+    setReplyError('');
     try {
-      await api.post(`/support/${selectedTicket}/messages/`, {
+      const response = await api.post(`/support/${selectedTicket}/messages/`, {
         message: replyMessage,
         is_internal_note: false,
       });
+      setTicketDetails((current) => mergeTicketMessage(current, {
+        ...response.data,
+        ticket_id: selectedTicket,
+      }));
+      setReplyError(response.data?.delivery_warning || '');
       setReplyMessage('');
-      await loadTicketDetails(selectedTicket);
     } catch (err) {
-      alert('Failed to send reply: ' + (err.response?.data?.detail || err.message));
+      setReplyError(err.response?.data?.detail || 'Failed to send your reply. Please try again.');
     } finally {
       setSendingReply(false);
+    }
+  };
+
+  const handleGenerateReplyDraft = async () => {
+    if (!selectedTicket) return;
+    setDraftingReply(true);
+    setReplyError('');
+    try {
+      const { data } = await api.post(`/support/${selectedTicket}/ai-draft/`);
+      setReplyMessage(data.draft);
+    } catch (error) {
+      setReplyError(
+        error.response?.data?.detail || 'AI drafting is unavailable. You can write a manual reply.'
+      );
+    } finally {
+      setDraftingReply(false);
     }
   };
 
   const handleAdoptAIResponse = () => {
     if (ticketDetails?.ai_suggested_response) {
       setReplyMessage(ticketDetails.ai_suggested_response);
+    }
+  };
+
+  const handleDownloadAttachment = async () => {
+    if (!ticketDetails) return;
+    setAttachmentError('');
+    try {
+      const response = await api.get(`/support/${ticketDetails.id}/attachment/`, {
+        responseType: 'blob',
+      });
+      const objectUrl = URL.createObjectURL(response.data);
+      const downloadLink = document.createElement('a');
+      const contentDisposition = response.headers['content-disposition'];
+      const filename = contentDisposition?.match(/filename="?([^";]+)"?/i)?.[1]
+        || 'support-attachment';
+      downloadLink.href = objectUrl;
+      downloadLink.download = filename;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch {
+      setAttachmentError('Unable to download this attachment. Please try again.');
     }
   };
 
@@ -178,15 +408,35 @@ export default function Dashboard() {
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4 bg-gradient-to-r from-white via-white to-emerald-50/40">
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="font-bold text-slate-800 text-lg">Support Desk & AI Triage Center</h2>
-                <span className="flex items-center gap-1 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs px-2.5 py-0.5 rounded-full font-medium shadow-sm">
-                  <Sparkles size={12} /> AI Enabled
-                </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-bold text-slate-800 text-lg">
+                  {isAdmin ? 'Support Desk & AI Triage Center' : 'Support Desk'}
+                </h2>
+                {isAdmin && (
+                  <span className="flex items-center gap-1 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs px-2.5 py-0.5 rounded-full font-medium shadow-sm">
+                    <Sparkles size={12} /> Admin AI
+                  </span>
+                )}
               </div>
               <p className="text-sm text-slate-500">
-                Automated sentiment & intent analysis, instant category tagging, and knowledge-base draft generation.
+                {isAdmin
+                  ? 'Review author requests, respond to tickets, and manage ticket triage.'
+                  : 'View your book support requests and communicate with the AuthorConnect team.'}
               </p>
+              {isAdmin && (
+                <p className="text-xs text-slate-500">
+                  Ticket queue connection: {queueSocket.status}
+                  {queueSocket.status === 'disconnected' && (
+                    <button
+                      type="button"
+                      onClick={queueSocket.retry}
+                      className="ml-2 font-medium text-emerald-700 underline"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </p>
+              )}
             </div>
             {!isAdmin && (
               <button
@@ -197,6 +447,20 @@ export default function Dashboard() {
               </button>
             )}
           </div>
+
+          {successMessage && (
+            <div role="status" className="flex items-center justify-between gap-3 bg-emerald-50 px-6 py-3 text-sm text-emerald-800">
+              <span>{successMessage}</span>
+              <button
+                type="button"
+                onClick={() => setSuccessMessage('')}
+                className="rounded p-1 hover:bg-emerald-100"
+                aria-label="Dismiss success message"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[520px]">
             {/* Ticket List Column */}
@@ -227,7 +491,7 @@ export default function Dashboard() {
 
                     <div className="flex items-center gap-2">
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-100 text-emerald-800">
-                        {t.category}
+                        {t.category_display || t.category}
                       </span>
                       <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${
                         t.priority === 'CRITICAL' || t.priority === 'HIGH'
@@ -267,6 +531,34 @@ export default function Dashboard() {
                         {ticketDetails.status}
                       </span>
                     </div>
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <span aria-live="polite">
+                        Live chat: {ticketSocket.status}
+                      </span>
+                      {ticketSocket.status === 'disconnected' && (
+                        <button
+                          type="button"
+                          onClick={ticketSocket.retry}
+                          className="font-medium text-emerald-700 underline"
+                        >
+                          Retry connection
+                        </button>
+                      )}
+                    </div>
+                    {ticketDetails.attachment_url && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={handleDownloadAttachment}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 underline"
+                        >
+                          <Paperclip size={13} /> Download attachment
+                        </button>
+                        {attachmentError && (
+                          <p role="alert" className="mt-1 text-xs text-rose-700">{attachmentError}</p>
+                        )}
+                      </div>
+                    )}
 
                     {/* AI COPILOT CARD - SIRF ADMIN KO DIKHEGA */}
                     {isAdmin && (
@@ -285,12 +577,14 @@ export default function Dashboard() {
 
                         <div className="grid grid-cols-2 gap-3 text-xs mb-3">
                           <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Auto Category</span>
-                            <span className="font-semibold text-slate-700">{ticketDetails.ai_category || ticketDetails.category}</span>
+                            <span className="text-slate-400 block text-[10px] uppercase font-bold">AI Suggested Category</span>
+                            <span className="font-semibold text-slate-700">
+                              {ticketDetails.ai_category_display || 'Not suggested'}
+                            </span>
                           </div>
                           <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                            <span className="text-slate-400 block text-[10px] uppercase font-bold">Assessed Priority</span>
-                            <span className="font-semibold text-slate-700">{ticketDetails.ai_priority || ticketDetails.priority}</span>
+                            <span className="text-slate-400 block text-[10px] uppercase font-bold">AI Suggested Priority</span>
+                            <span className="font-semibold text-slate-700">{ticketDetails.ai_priority || 'Not suggested'}</span>
                           </div>
                         </div>
 
@@ -313,6 +607,15 @@ export default function Dashboard() {
                             </p>
                           </div>
                         )}
+                        <button
+                          type="button"
+                          onClick={handleGenerateReplyDraft}
+                          disabled={draftingReply}
+                          className="mt-3 inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-60"
+                        >
+                          <Sparkles size={14} />
+                          {draftingReply ? 'Generating draft...' : 'Generate editable AI reply'}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -347,26 +650,30 @@ export default function Dashboard() {
                   {/* Reply Input Box */}
                   <div className="p-4 bg-white border-t border-slate-200">
                     <form onSubmit={handleSendMessage} className="flex gap-2">
-                      <input
-                        type="text"
+                      <textarea
+                        rows={2}
                         value={replyMessage}
                         onChange={(e) => setReplyMessage(e.target.value)}
                         placeholder={isAdmin ? "Type your reply or adopt AI draft above..." : "Type your message..."}
-                        className="flex-1 px-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                        aria-label="Write a ticket reply"
+                        className="flex-1 resize-y px-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
                       />
                       <button
                         type="submit"
-                        disabled={sendingReply}
+                        disabled={sendingReply || !replyMessage.trim()}
                         className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-1 transition disabled:opacity-50"
                       >
                         <Send size={16} /> {sendingReply ? 'Sending...' : 'Send'}
                       </button>
                     </form>
+                    {replyError && (
+                      <p role="alert" className="mt-2 text-sm text-rose-700">{replyError}</p>
+                    )}
                   </div>
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-400 text-sm">
-                  <Bot size={36} className="text-slate-300 mb-2" />
+                  <MessageCircle size={36} className="text-slate-300 mb-2" />
                   Select a ticket from the left to view conversation.
                 </div>
               )}
@@ -388,6 +695,8 @@ export default function Dashboard() {
                 <th className="py-3 px-6">ISBN</th>
                 <th className="py-3 px-6">Status</th>
                 <th className="py-3 px-6 text-right">Units Sold</th>
+                <th className="py-3 px-6 text-right">Royalty Earned</th>
+                <th className="py-3 px-6 text-right">Royalty Paid</th>
                 <th className="py-3 px-6 text-right">Pending Royalty</th>
               </tr>
             </thead>
@@ -404,6 +713,8 @@ export default function Dashboard() {
                     </span>
                   </td>
                   <td className="py-4 px-6 text-right font-medium">{b.sales_count}</td>
+                  <td className="py-4 px-6 text-right font-medium text-slate-700">₹{Number(b.royalty_earned || 0).toLocaleString('en-IN')}</td>
+                  <td className="py-4 px-6 text-right font-medium text-slate-700">₹{Number(b.royalty_paid || 0).toLocaleString('en-IN')}</td>
                   <td className="py-4 px-6 text-right font-semibold text-emerald-600">₹{b.royalty_pending}</td>
                 </tr>
               ))}
@@ -414,43 +725,119 @@ export default function Dashboard() {
 
       {/* Ticket Creation Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-ticket-title"
+            className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+          >
             <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="text-emerald-600" size={20} />
-              <h3 className="text-lg font-bold text-slate-800">Raise Support Ticket</h3>
+              <MessageCircle className="text-emerald-600" size={20} />
+              <h3 id="create-ticket-title" className="text-lg font-bold text-slate-800">Raise Support Ticket</h3>
+              <button
+                type="button"
+                onClick={() => setShowModal(false)}
+                className="ml-auto rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close support ticket form"
+              >
+                <X size={18} />
+              </button>
             </div>
             <p className="text-xs text-slate-500 mb-4">
               Submit your query regarding royalties, publishing status, or distribution.
             </p>
 
             <form onSubmit={handleCreateTicket} className="space-y-4">
+              {formError && (
+                <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">
+                  <AlertCircle size={17} className="mt-0.5 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
-                <input
-                  type="text"
-                  required
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                  placeholder="e.g. Discrepancy in monthly royalty payout"
-                />
+                <label htmlFor="ticket-book" className="block text-sm font-medium text-slate-700 mb-1">Book</label>
+                <select
+                  id="ticket-book"
+                  value={bookId}
+                  onChange={(e) => setBookId(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="">General / Account Level</option>
+                  {books.map((book) => (
+                    <option key={book.id} value={book.id}>{book.title}</option>
+                  ))}
+                </select>
+                {formErrors.book && <p className="mt-1 text-xs text-rose-700">{formErrors.book}</p>}
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
+                <label htmlFor="ticket-subject" className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
+                <input
+                  id="ticket-subject"
+                  type="text"
+                  required
+                  maxLength={255}
+                  value={subject}
+                  onChange={(e) => {
+                    setSubject(e.target.value);
+                    setFormErrors((current) => ({ ...current, subject: '' }));
+                  }}
+                  aria-invalid={Boolean(formErrors.subject)}
+                  aria-describedby={formErrors.subject ? 'ticket-subject-error' : undefined}
+                  className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${formErrors.subject ? 'border-rose-500' : 'border-slate-300'}`}
+                  placeholder="e.g. Discrepancy in monthly royalty payout"
+                />
+                {formErrors.subject && <p id="ticket-subject-error" className="mt-1 text-xs text-rose-700">{formErrors.subject}</p>}
+              </div>
+              <div>
+                <label htmlFor="ticket-description" className="block text-sm font-medium text-slate-700 mb-1">Description</label>
                 <textarea
+                  id="ticket-description"
                   rows={4}
                   required
+                  maxLength={10000}
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    setFormErrors((current) => ({ ...current, description: '' }));
+                  }}
+                  aria-invalid={Boolean(formErrors.description)}
+                  aria-describedby={formErrors.description ? 'ticket-description-error' : undefined}
+                  className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none ${formErrors.description ? 'border-rose-500' : 'border-slate-300'}`}
                   placeholder="Provide context on your query..."
                 />
+                {formErrors.description && <p id="ticket-description-error" className="mt-1 text-xs text-rose-700">{formErrors.description}</p>}
+              </div>
+              <div>
+                <label htmlFor="ticket-attachment" className="block text-sm font-medium text-slate-700 mb-1">
+                  Attachment <span className="font-normal text-slate-500">(optional)</span>
+                </label>
+                <input
+                  id="ticket-attachment"
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
+                  onChange={(e) => {
+                    setAttachment(e.target.files?.[0] || null);
+                    setFormErrors((current) => ({ ...current, attachment: '' }));
+                  }}
+                  aria-invalid={Boolean(formErrors.attachment)}
+                  aria-describedby="ticket-attachment-help"
+                  className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:font-medium file:text-emerald-700 hover:file:bg-emerald-100"
+                />
+                <p id="ticket-attachment-help" className="mt-1 text-xs text-slate-500">
+                  PDF, PNG, JPEG, or UTF-8 text; maximum 5 MB.
+                </p>
+                {attachment && <p className="mt-1 text-xs text-slate-600">{attachment.name}</p>}
+                {formErrors.attachment && <p className="mt-1 text-xs text-rose-700">{formErrors.attachment}</p>}
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
+                  onClick={() => {
+                    setShowModal(false);
+                    setFormError('');
+                    setFormErrors({});
+                  }}
                   className="px-4 py-2 border rounded-lg text-sm hover:bg-slate-50 text-slate-600"
                 >
                   Cancel
@@ -461,7 +848,7 @@ export default function Dashboard() {
                   className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 font-medium disabled:opacity-50 flex items-center gap-2"
                 >
                   <Sparkles size={14} />
-                  {submitting ? 'Analyzing & Submitting...' : 'Submit Ticket'}
+                  {submitting ? 'Submitting...' : 'Submit Ticket'}
                 </button>
               </div>
             </form>
