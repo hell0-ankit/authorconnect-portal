@@ -20,6 +20,8 @@ class BookListSerializer(serializers.ModelSerializer):
             'status',
             'publication_date',
             'sales_count',
+            'royalty_earned',
+            'royalty_paid',
             'royalty_pending',
         ]
 

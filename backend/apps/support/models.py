@@ -1,7 +1,15 @@
 import uuid
+from pathlib import Path
+
 from django.db import models
 from django.conf import settings
 from apps.books.models import Book
+from .storage import PrivateTicketAttachmentStorage
+
+
+def ticket_attachment_upload_to(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"ticket-attachments/{uuid.uuid4().hex}{extension}"
 
 
 class Ticket(models.Model):
@@ -23,6 +31,11 @@ class Ticket(models.Model):
         DISTRIBUTION = 'DISTRIBUTION', 'Distribution & Sales'
         ACCOUNT = 'ACCOUNT', 'Account & General Support'
         TECHNICAL = 'TECHNICAL', 'Technical Issue'
+        ROYALTY_PAYMENTS = 'ROYALTY_PAYMENTS', 'Royalty & Payments'
+        ISBN_METADATA = 'ISBN_METADATA', 'ISBN & Metadata Issues'
+        PRINTING_QUALITY = 'PRINTING_QUALITY', 'Printing & Quality'
+        BOOK_STATUS = 'BOOK_STATUS', 'Book Status & Production Updates'
+        GENERAL_INQUIRY = 'GENERAL_INQUIRY', 'General Inquiry'
 
     ticket_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     author = models.ForeignKey(
@@ -47,6 +60,12 @@ class Ticket(models.Model):
     )
     subject = models.CharField(max_length=255)
     description = models.TextField()
+    attachment = models.FileField(
+        upload_to=ticket_attachment_upload_to,
+        storage=PrivateTicketAttachmentStorage(),
+        blank=True,
+        null=True,
+    )
 
     # Active values (Admin override kar sakta hai)
     category = models.CharField(
@@ -66,8 +85,18 @@ class Ticket(models.Model):
     )
 
     # AI Integration Fields
-    ai_category = models.CharField(max_length=50, blank=True, null=True)
-    ai_priority = models.CharField(max_length=20, blank=True, null=True)
+    ai_category = models.CharField(
+        max_length=50,
+        choices=Category.choices,
+        blank=True,
+        null=True,
+    )
+    ai_priority = models.CharField(
+        max_length=20,
+        choices=Priority.choices,
+        blank=True,
+        null=True,
+    )
     ai_suggested_response = models.TextField(blank=True, null=True)
 
     internal_notes = models.TextField(blank=True, null=True)

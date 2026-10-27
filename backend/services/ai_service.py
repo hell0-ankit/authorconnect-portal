@@ -1,90 +1,213 @@
-import os
+
 import json
 import logging
+import os
 from pathlib import Path
-from openai import OpenAI
+
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-FAQ_PATH = BASE_DIR / 'knowledge_base' / 'bookleaf_faq.md'
+FAQ_PATH = BASE_DIR / "knowledge_base" / "bookleaf_faq.md"
+FAQ_CONTENT = (
+    FAQ_PATH.read_text(encoding="utf-8")
+    if FAQ_PATH.exists()
+    else ""
+)
 
-FAQ_CONTENT = ""
-if FAQ_PATH.exists():
-    with open(FAQ_PATH, 'r', encoding='utf-8') as f:
-        FAQ_CONTENT = f.read()
+CATEGORIES = {
+    "ROYALTY_PAYMENTS",
+    "ISBN_METADATA",
+    "PRINTING_QUALITY",
+    "DISTRIBUTION",
+    "BOOK_STATUS",
+    "GENERAL_INQUIRY",
+}
+PRIORITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
-def analyze_ticket_with_ai(subject: str, description: str) -> dict:
-    """
-    Analyzes ticket subject and description using OpenAI API.
-    Returns suggested category, priority, and draft response based on knowledge base.
-    Provides graceful fallback if API is unreachable or key is missing.
-    """
-    api_key = os.getenv('OPENAI_API_KEY')
+def _fallback_classification(
+    subject: str, description: str
+) -> dict[str, str]:
+    text = f"{subject} {description}".lower()
 
-    # Fallback default values
-    fallback_result = {
-        'category': 'ACCOUNT',
-        'priority': 'MEDIUM',
-        'suggested_response': 'Thank you for contacting BookLeaf Support. We have received your query and our operations team is currently reviewing the details. We will update you shortly.',
+    category = "GENERAL_INQUIRY"
+
+    if any(word in text for word in (
+        "royalty", "payment", "payout", "bank", "earnings"
+    )):
+        category = "ROYALTY_PAYMENTS"
+    elif any(word in text for word in (
+        "isbn", "metadata", "title page", "author name"
+    )):
+        category = "ISBN_METADATA"
+    elif any(word in text for word in (
+        "printing", "print quality", "damaged", "pages"
+    )):
+        category = "PRINTING_QUALITY"
+    elif any(word in text for word in (
+        "distribution", "amazon", "flipkart",
+        "availability", "stock"
+    )):
+        category = "DISTRIBUTION"
+    elif any(word in text for word in (
+        "production", "book status", "publishing", "manuscript"
+    )):
+        category = "BOOK_STATUS"
+
+    priority = "MEDIUM"
+    if any(word in text for word in (
+        "critical", "urgent", "immediately", "blocked"
+    )):
+        priority = "HIGH"
+
+    return {
+        "category": category,
+        "priority": priority,
+        "suggested_response": (
+            "Thank you for contacting AuthorConnect Support. "
+            "Our team will review your query shortly."
+        ),
     }
 
-    # Rule-based fast classification for fallback
-    text_lower = f"{subject} {description}".lower()
-    if any(k in text_lower for k in ['royalty', 'payment', 'payout', 'money', 'bank', 'earnings']):
-        fallback_result['category'] = 'ROYALTY'
-    elif any(k in text_lower for k in ['publish', 'edit', 'cover', 'isbn', 'manuscript', 'proof']):
-        fallback_result['category'] = 'PUBLISHING'
-    elif any(k in text_lower for k in ['amazon', 'flipkart', 'sales', 'stock', 'delivery', 'order']):
-        fallback_result['category'] = 'DISTRIBUTION'
-    elif any(k in text_lower for k in ['urgent', 'error', 'bug', 'crash', 'cannot login']):
-        fallback_result['priority'] = 'HIGH'
+
+def _generate_json(system_prompt: str, user_prompt: str) -> dict:
+    """Generate JSON using the Gemini API."""
+    api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        logger.info("OPENAI_API_KEY not configured. Utilizing rule-based fallback classification.")
-        return fallback_result
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    try:
-        client = OpenAI(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
-        system_prompt = f"""
-You are the AI Assistant for BookLeaf Publishing Support Portal.
-Analyze the author's support ticket and perform three tasks:
-1. Classify Category strictly into one of: ROYALTY, PUBLISHING, DISTRIBUTION, ACCOUNT, TECHNICAL.
-2. Determine Priority strictly into one of: CRITICAL, HIGH, MEDIUM, LOW.
-3. Draft a professional, polite suggested response using the following Knowledge Base:
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=600,
+        ),
+    )
 
---- KNOWLEDGE BASE ---
+    content = response.text
+    if not content:
+        raise ValueError("Gemini returned an empty response.")
+
+    data = json.loads(content)
+
+    if not isinstance(data, dict):
+        raise ValueError("Gemini returned an invalid JSON object.")
+
+    return data
+
+
+def analyze_ticket_with_ai(
+    subject: str, description: str
+) -> dict[str, str]:
+    """Suggest ticket classification without blocking ticket creation."""
+    fallback = _fallback_classification(subject, description)
+
+    system_prompt = f"""
+Classify this AuthorConnect support ticket.
+
+Choose exactly one category from:
+{", ".join(sorted(CATEGORIES))}
+
+Choose exactly one priority from:
+{", ".join(sorted(PRIORITIES))}
+
+Return JSON with these string keys:
+category, priority, suggested_response.
+
+Keep the suggested response professional and concise.
+Do not invent payment dates or claim that actions have been taken.
+
+BookLeaf Knowledge Base:
 {FAQ_CONTENT}
---- END KNOWLEDGE BASE ---
-
-Return strictly a valid JSON object with keys:
-"category", "priority", "suggested_response".
-Do not enclose the JSON in markdown code blocks or backticks.
 """
 
-        user_prompt = f"Subject: {subject}\nDescription: {description}"
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.2,
-            max_tokens=400,
+    try:
+        data = _generate_json(
+            system_prompt,
+            f"Subject: {subject}\nDescription: {description}",
         )
 
-        content = response.choices[0].message.content.strip()
-        data = json.loads(content)
+        category = data.get("category")
+        priority = data.get("priority")
+        suggested_response = data.get("suggested_response")
 
         return {
-            'category': data.get('category', fallback_result['category']),
-            'priority': data.get('priority', fallback_result['priority']),
-            'suggested_response': data.get('suggested_response', fallback_result['suggested_response']),
+            "category": (
+                category
+                if category in CATEGORIES
+                else fallback["category"]
+            ),
+            "priority": (
+                priority
+                if priority in PRIORITIES
+                else fallback["priority"]
+            ),
+            "suggested_response": (
+                suggested_response.strip()
+                if isinstance(suggested_response, str)
+                and suggested_response.strip()
+                else fallback["suggested_response"]
+            ),
         }
 
-    except Exception:
-        logger.exception("OpenAI ticket analysis failed. Proceeding with fallback.")
-        return fallback_result
+    except Exception as exc:
+        logger.warning(
+            "Gemini ticket analysis failed; using fallback: %s",
+            exc,
+        )
+        return fallback
+
+
+def generate_ticket_response_draft(
+    subject: str,
+    description: str,
+    book_context: str,
+) -> str | None:
+    """Generate an admin-only draft for review; never send it automatically."""
+
+    system_prompt = f"""
+You draft a concise, professional support response for an
+AuthorConnect administrator to review and edit.
+
+Do not claim that actions have been taken.
+Do not invent payment dates, book details, or policy exceptions.
+Use the supplied context and knowledge base.
+Return JSON with one string key: draft.
+
+Relevant book data:
+{book_context or "No book is associated with this ticket."}
+
+BookLeaf Knowledge Base:
+{FAQ_CONTENT}
+"""
+
+    try:
+        data = _generate_json(
+            system_prompt,
+            f"Subject: {subject}\nAuthor message: {description}",
+        )
+
+        draft = data.get("draft")
+
+        if not isinstance(draft, str) or not draft.strip():
+            return None
+
+        return draft.strip()[:10000]
+
+    except Exception as exc:
+        logger.warning(
+            "Gemini admin reply draft generation failed: %s",
+            exc,
+        )
+        return None

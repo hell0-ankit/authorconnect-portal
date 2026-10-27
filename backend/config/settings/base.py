@@ -33,6 +33,7 @@ ALLOWED_HOSTS = [
 # Django apps enabled for this project, including built-in, project, and
 # third-party apps.
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -41,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     # Project applications
+    'channels',
     'apps.accounts',
     'apps.books',
     'apps.support',
@@ -88,6 +90,17 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
+
+REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [REDIS_URL],
+        },
+    },
+}
 
 
 # PostgreSQL connection configuration. Credentials and connection details are
@@ -153,6 +166,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+PRIVATE_MEDIA_ROOT = BASE_DIR / 'private_media'
+DATA_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
 
 
 # Django REST Framework defaults, including the schema generator used by the

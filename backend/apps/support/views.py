@@ -1,11 +1,15 @@
-from rest_framework import generics, status
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
+from rest_framework import generics
+from rest_framework.exceptions import NotFound
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
 from .models import Ticket, TicketMessage
+from .events import broadcast_new_ticket, broadcast_ticket_message, broadcast_ticket_update
 from .serializers import (
     TicketListSerializer,
     TicketDetailSerializer,
@@ -14,14 +18,14 @@ from .serializers import (
 )
 from apps.core.pagination import StandardResultsSetPagination
 from apps.core.permissions import IsAdminUserRole
-from services.ai_service import analyze_ticket_with_ai
+from services.ai_service import generate_ticket_response_draft
 
 
 @extend_schema(tags=['Support Tickets'])
 class TicketListCreateView(generics.ListCreateAPIView):
     """
     - GET: List tickets (Admin sees all; Author sees only own tickets).
-    - POST: Author creates ticket, automatically analyzed via AI service.
+    - POST: Author creates a ticket for admin review.
     """
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
@@ -52,20 +56,9 @@ class TicketListCreateView(generics.ListCreateAPIView):
         return queryset.order_by('-created_at')
 
     def perform_create(self, serializer):
-        subject = serializer.validated_data.get('subject')
         description = serializer.validated_data.get('description')
 
-        # Trigger AI analysis
-        ai_data = analyze_ticket_with_ai(subject, description)
-
-        ticket = serializer.save(
-            author=self.request.user,
-            category=ai_data.get('category', Ticket.Category.ACCOUNT),
-            priority=ai_data.get('priority', Ticket.Priority.MEDIUM),
-            ai_category=ai_data.get('category'),
-            ai_priority=ai_data.get('priority'),
-            ai_suggested_response=ai_data.get('suggested_response'),
-        )
+        ticket = serializer.save(author=self.request.user)
 
         # Initial author message in conversation thread
         TicketMessage.objects.create(
@@ -74,6 +67,7 @@ class TicketListCreateView(generics.ListCreateAPIView):
             message=description,
             is_internal_note=False
         )
+        broadcast_new_ticket(ticket)
 
 
 @extend_schema(tags=['Support Tickets'])
@@ -91,6 +85,14 @@ class TicketDetailView(generics.RetrieveUpdateAPIView):
         if user.is_admin_user:
             return Ticket.objects.select_related('author', 'assigned_to', 'book').all()
         return Ticket.objects.filter(author=user).select_related('author', 'assigned_to', 'book')
+
+    def perform_update(self, serializer):
+        ticket = serializer.instance
+        previous = (ticket.status, ticket.category, ticket.priority)
+        ticket = serializer.save()
+        current = (ticket.status, ticket.category, ticket.priority)
+        if current != previous:
+            broadcast_ticket_update(ticket)
 
 
 @extend_schema(tags=['Support Tickets'])
@@ -115,8 +117,66 @@ class TicketMessageCreateView(generics.CreateAPIView):
         if not user.is_admin_user:
             is_internal = False
 
-        serializer.save(
+        message = serializer.save(
             ticket=ticket,
             sender=user,
             is_internal_note=is_internal
         )
+        self.message_broadcasted = broadcast_ticket_message(message)
+
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        if getattr(self, 'message_broadcasted', True) is False:
+            response.data['delivery_warning'] = (
+                'Your reply was saved, but live delivery is currently unavailable. '
+                'Other participants will see it when they reconnect or refresh.'
+            )
+        return response
+
+
+@extend_schema(tags=['Support Tickets'])
+class TicketAIDraftView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUserRole]
+
+    def post(self, request, pk):
+        ticket = get_object_or_404(
+            Ticket.objects.select_related('author', 'book'),
+            pk=pk,
+        )
+        book_context = ''
+        if ticket.book_id:
+            book_context = (
+                f'Title: {ticket.book.title}; ISBN: {ticket.book.isbn or "not provided"}; '
+                f'Genre: {ticket.book.genre or "not provided"}; '
+                f'Publication status: {ticket.book.status}.'
+            )
+        draft = generate_ticket_response_draft(
+            ticket.subject,
+            ticket.description,
+            book_context,
+        )
+        if draft is None:
+            return Response(
+                {'detail': 'AI drafting is unavailable. You can write and send a manual reply.'},
+                status=503,
+            )
+        return Response({'draft': draft})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ticket_attachment_download(request, pk):
+    user = request.user
+    tickets = Ticket.objects.filter(pk=pk)
+    if not user.is_admin_user:
+        tickets = tickets.filter(author=user)
+    ticket = get_object_or_404(tickets)
+    if not ticket.attachment:
+        raise NotFound('This ticket has no attachment.')
+
+    ticket.attachment.open('rb')
+    return FileResponse(
+        ticket.attachment,
+        as_attachment=True,
+        filename=ticket.attachment.name.rsplit('/', 1)[-1],
+    )
