@@ -19,6 +19,7 @@ services:
     env_file:
       - ./backend/.env
     environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
       REDIS_URL: redis://redis:6379/0
       DB_HOST: ${DB_HOST_DOCKER:-host.docker.internal}
     ports:
@@ -26,6 +27,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    volumes:
+      - private_media:/app/private_media
 
 volumes:
   redis_data:
+  private_media:
