@@ -144,16 +144,31 @@ class TicketAIDraftView(APIView):
             pk=pk,
         )
         book_context = ''
+        book_title = None
+        pending_royalty = None
         if ticket.book_id:
+            book_title = ticket.book.title
+            pending_royalty = ticket.book.royalty_pending
             book_context = (
                 f'Title: {ticket.book.title}; ISBN: {ticket.book.isbn or "not provided"}; '
                 f'Genre: {ticket.book.genre or "not provided"}; '
-                f'Publication status: {ticket.book.status}.'
+                f'Publication status: {ticket.book.status}; '
+                f'Pending royalty: Rs {ticket.book.royalty_pending}.'
             )
+        conversation_context = '\n'.join(
+            f"{'Author' if message.sender_id == ticket.author_id else 'Support'}: "
+            f"{message.message}"
+            for message in ticket.messages.filter(
+                is_internal_note=False,
+            ).select_related('sender')
+        )
         draft = generate_ticket_response_draft(
             ticket.subject,
             ticket.description,
             book_context,
+            book_title=book_title,
+            pending_royalty=pending_royalty,
+            conversation_context=conversation_context,
         )
         if draft is None:
             return Response(

@@ -123,9 +123,25 @@ class Command(BaseCommand):
                 "assigned_to": admin_user,
                 "ai_category": "ROYALTY",
                 "ai_priority": "MEDIUM",
-                "ai_suggested_response": "Hello Rohit, October royalties are processed between the 1st and 7th of every following month. Your pending amount of Rs 5952 is queued for transfer.",
+                "ai_suggested_response": "Hello Rohit, we need to verify the relevant sales period and payment status before confirming a payment or resolution timeline.",
             }
         )
+
+        obsolete_royalty_response = (
+            "Hello Rohit, October royalties are processed between the 1st "
+            "and 7th of every following month. Your pending amount of Rs "
+            "5952 is queued for transfer."
+        )
+        if (
+            not created
+            and ticket_1.ai_suggested_response == obsolete_royalty_response
+        ):
+            ticket_1.ai_suggested_response = (
+                "Hello Rohit, we need to verify the relevant sales period "
+                "and payment status before confirming a payment or "
+                "resolution timeline."
+            )
+            ticket_1.save(update_fields=["ai_suggested_response"])
 
         if created:
             TicketMessage.objects.create(

@@ -171,3 +171,59 @@ reverse proxy configured for WebSocket `Upgrade`/`Connection` headers and
 to the application network, require authentication/TLS where supported, and
 set `REDIS_URL` only in the backend environment. Do not log WebSocket
 authentication frames or tokens.
+
+### Docker development
+
+Docker Compose runs the existing Django ASGI application and Redis. PostgreSQL
+remains external and uses the existing `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
+`DB_HOST`, and `DB_PORT` settings from `backend/.env`; no PostgreSQL container
+or replacement database is created. The example file lists the required
+environment variables. Copy it if needed and fill in the existing PostgreSQL
+credentials and a Django `SECRET_KEY` before starting:
+
+```powershell
+Copy-Item backend\.env.example backend\.env
+```
+
+When PostgreSQL runs on the Windows host, Compose connects to it through
+`host.docker.internal` while Django running locally continues to use the
+`DB_HOST` in `backend/.env`. For a PostgreSQL server at another address, set
+`DB_HOST_DOCKER` in the shell where Compose is run to that server's hostname.
+Start PostgreSQL before running migrations.
+
+From the project root, build and start Redis, check that it is ready, migrate
+the existing PostgreSQL database, and then start the backend:
+
+```powershell
+docker compose build
+docker compose up -d redis
+docker compose exec redis redis-cli ping
+docker compose run --rm backend python manage.py migrate
+docker compose up -d backend
+docker compose ps
+```
+
+The Redis check should print `PONG`. The backend waits for Redis's health check,
+and uses `redis://redis:6379/0` inside Docker. Redis is also published only on
+`127.0.0.1:6379`, so local Windows development using the default
+`redis://127.0.0.1:6379/0` can use the same service.
+
+Keep the frontend running locally so its existing Vite `/api` and `/ws` proxies
+connect to the container on `127.0.0.1:8000`. Start it in another PowerShell
+window with:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+To test chat, sign in as an author and a support admin in separate browser
+sessions, open the same ticket, and confirm the live connection and messages
+appear in both sessions. WebSocket connections continue to use the existing
+JWT authentication and ticket routes.
+
+Stop the containers without removing data using `docker compose stop`, and
+resume them later with `docker compose start`. Alternatively,
+`docker compose down` removes the containers but preserves the `redis_data`
+volume; run `docker compose up -d` to recreate and start the services. Do not
+use `docker compose down -v` if you want to keep that volume.
