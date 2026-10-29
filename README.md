@@ -1,69 +1,7 @@
-authorconnect-portal/
-├── backend/
-│   ├── .env
-│   ├── .env.example
-│   ├── manage.py
-│   ├── requirements.txt
-│   ├── config/
-│   │   ├── __init__.py
-│   │   ├── asgi.py
-│   │   ├── settings.py
-│   │   ├── urls.py
-│   │   └── wsgi.py
-│   ├── apps/
-│   │   ├── __init__.py
-│   │   ├── accounts/
-│   │   │   ├── __init__.py
-│   │   │   ├── admin.py
-│   │   │   ├── apps.py
-│   │   │   ├── models.py
-│   │   │   ├── serializers.py
-│   │   │   ├── urls.py
-│   │   │   └── views.py
-│   │   ├── books/
-│   │   │   ├── __init__.py
-│   │   │   ├── admin.py
-│   │   │   ├── apps.py
-│   │   │   ├── models.py
-│   │   │   ├── serializers.py
-│   │   │   ├── urls.py
-│   │   │   └── views.py
-│   │   └── support/
-│   │       ├── __init__.py
-│   │       ├── admin.py
-│   │       ├── apps.py
-│   │       ├── models.py
-│   │       ├── serializers.py
-│   │       ├── urls.py
-│   │       └── views.py
-│   ├── services/
-│   │   └── ai_service.py
-│   ├── knowledge_base/
-│   │   └── bookleaf_faq.md
-│   └── fixtures/
-│       └── sample_data.json
-├── frontend/
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── tailwind.config.js
-│   └── src/
-│       ├── main.jsx
-│       ├── App.jsx
-│       ├── index.css
-│       ├── components/
-│       ├── pages/
-│       │   ├── auth/
-│       │   ├── author/
-│       │   └── admin/
-│       ├── services/
-│       ├── hooks/
-│       ├── context/
-│       └── utils/
-├── docs/
-│   ├── architecture.md
-│   └── api-documentation.md
-├── README.md
-└── .gitignore
+# AuthorConnect Portal
+
+For prerequisites and step-by-step local development instructions, see the
+[Project Setup Guide](./SETUP.md).
 
 ## Support tickets
 
@@ -258,3 +196,32 @@ resume them later with `docker compose start`. Alternatively,
 `docker compose down` removes the containers but preserves the `redis_data`
 volume; run `docker compose up -d` to recreate and start the services. Do not
 use `docker compose down -v` if you want to keep that volume.
+
+## Demo login credentials
+
+These credentials are for local/demo use only. They are created by the seed
+data command and work only after it has run successfully and the accounts exist
+in the database. Do not use these passwords in production.
+
+### Admin account
+
+| Role | Username | Email | Password |
+|---|---|---|---|
+| Admin | `admin` | `admin@bookleaf.com` | `AdminPass123!` |
+
+### Author accounts
+
+All listed authors share the demo password `AuthorPass123!`.
+
+| # | Author | Username | Email |
+|---:|---|---|---|
+| 1 | Priya Sharma | `priya_sharma` | priya.sharma@email.com |
+| 2 | Rohit Kapoor | `rohit_kapoor` | rohit.kapoor@email.com |
+| 3 | Ananya Reddy | `ananya_reddy` | ananya.reddy@email.com |
+| 4 | Vikram Joshi | `vikram_joshi` | vikram.joshi@email.com |
+| 5 | Meera Nair | `meera_nair` | meera.nair@email.com |
+| 6 | Arjun Malhotra | `arjun_malhotra` | arjun.malhotra@email.com |
+| 7 | Sneha Kulkarni | `sneha_kulkarni` | sneha.kulkarni@email.com |
+| 8 | Farhan Sheikh | `farhan_sheikh` | farhan.sheikh@email.com |
+| 9 | Kavita Deshmukh | `kavita_deshmukh` | kavita.deshmukh@email.com |
+| 10 | Diya Chatterjee | `diya_chatterjee` | diya.chatterjee@email.com |
