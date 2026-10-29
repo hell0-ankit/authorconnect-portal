@@ -150,7 +150,7 @@ class TicketDetailSerializer(serializers.ModelSerializer):
     def get_fields(self):
         fields = super().get_fields()
         request = self.context.get('request')
-        if request and not request.user.is_admin_user:
+        if request and not getattr(request.user, 'is_admin_user', False):
             for field in fields.values():
                 field.read_only = True
             fields.pop('internal_notes', None)
