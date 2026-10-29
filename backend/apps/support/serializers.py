@@ -210,6 +210,10 @@ class TicketCreateSerializer(serializers.ModelSerializer):
     def get_fields(self):
         fields = super().get_fields()
         request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is None or not user.is_authenticated:
+            fields['book'].queryset = fields['book'].queryset.none()
+            return fields
         if request:
             fields['book'].queryset = fields['book'].queryset.filter(
                 author=request.user
