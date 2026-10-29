@@ -1,10 +1,13 @@
-from django.core.management.base import BaseCommand
+import datetime
+import os
+import re
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
+from django.core.management.base import BaseCommand, CommandError
+
 from apps.books.models import Book
 from apps.support.models import Ticket, TicketMessage
-from decimal import Decimal
-import datetime
-import re
 
 User = get_user_model()
 
@@ -13,11 +16,21 @@ class Command(BaseCommand):
     help = "Seeds initial sample data for BookLeaf AuthorConnect portal"
 
     def handle(self, *args, **options):
+        # Read passwords from the environment instead of hardcoding them.
+        admin_password = os.getenv("SEED_ADMIN_PASSWORD")
+        author_password = os.getenv("SEED_AUTHOR_PASSWORD")
+        if not admin_password or not author_password:
+            raise CommandError(
+                "Set SEED_ADMIN_PASSWORD and SEED_AUTHOR_PASSWORD "
+                "before running seed_data."
+            )
+
         self.stdout.write("Seeding AuthorConnect database...")
 
         # 1. Create Admin User
+        admin_username = os.getenv("SEED_ADMIN_USERNAME", "admin")
         admin_user, created = User.objects.update_or_create(
-            username="admin",
+            username=admin_username,
             defaults={
                 "email": "admin@bookleaf.com",
                 "role": User.Role.ADMIN,
@@ -25,15 +38,19 @@ class Command(BaseCommand):
                 "is_superuser": True,
             },
         )
-        admin_user.set_password("AdminPass123!")
-        admin_user.save(update_fields=["password"])
 
+        # Set the password only for a newly created user, so a password
+        # changed later is not overwritten on every run or deploy.
         if created:
+            admin_user.set_password(admin_password)
+            admin_user.save(update_fields=["password"])
             self.stdout.write(
-                self.style.SUCCESS("Created admin user: admin / AdminPass123!")
+                self.style.SUCCESS(f"Created admin user: {admin_username}")
             )
         else:
-            self.stdout.write("Updated existing admin user.")
+            self.stdout.write(
+                "Admin user already exists; password left unchanged."
+            )
 
         # 2. Authors: use only existing User fields
         authors_data = [
@@ -63,15 +80,16 @@ class Command(BaseCommand):
                     "is_staff": False,
                 },
             )
-            author.set_password("AuthorPass123!")
-            author.save(update_fields=["password"])
 
+            # Only set the password for newly created authors.
             if created:
+                author.set_password(author_password)
+                author.save(update_fields=["password"])
                 self.stdout.write(
                     self.style.SUCCESS(f"Created author: {username}")
                 )
             else:
-                self.stdout.write(f"Updated existing author: {username}")
+                self.stdout.write(f"Author already exists: {username}")
 
             authors[data["name"]] = author
 
