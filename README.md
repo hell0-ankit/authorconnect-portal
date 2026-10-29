@@ -172,6 +172,37 @@ to the application network, require authentication/TLS where supported, and
 set `REDIS_URL` only in the backend environment. Do not log WebSocket
 authentication frames or tokens.
 
+### Production deployment checklist
+
+Use `config.settings.production` for both ASGI and WSGI deployments. Set a
+unique, private `SECRET_KEY`, production PostgreSQL credentials, a private
+Redis URL, and an explicit `ALLOWED_HOSTS` list. Set `CORS_ALLOWED_ORIGINS`
+and `CSRF_TRUSTED_ORIGINS` to the exact HTTPS browser origins; do not use
+wildcards. The Render hostname is used only when the corresponding host or
+origin list is not configured.
+
+Terminate TLS at a trusted reverse proxy and configure it to overwrite
+`X-Forwarded-Proto` before forwarding requests. Keep
+`SECURE_SSL_REDIRECT=true` and HSTS enabled only when the public service is
+available over HTTPS. `SECURE_HSTS_INCLUDE_SUBDOMAINS` and
+`SECURE_HSTS_PRELOAD` are opt-in because they affect every subdomain and can
+be difficult to roll back.
+
+Before deploying, run checks and database migrations as separate release
+steps:
+
+```sh
+cd backend
+python manage.py check --deploy --settings=config.settings.production
+python manage.py migrate --noinput --settings=config.settings.production
+```
+
+Build frontend assets with the production API/WebSocket URLs. Use durable,
+access-controlled storage for private ticket attachments and a backup/restore
+plan for PostgreSQL, Redis as appropriate for the service, and uploaded files.
+The included Docker Compose configuration is for local development; it binds
+services to loopback and intentionally disables HTTPS redirection.
+
 ### Docker development
 
 Docker Compose runs the existing Django ASGI application and Redis. PostgreSQL
